@@ -154,13 +154,9 @@ impl VirtualPosition {
         (a0, a1)
     }
 
-    /// Principal value in USD, capped to deposited value (virtual positions can't gain principal)
     fn principal_usd(&self, pool: &UniswapV3Pool, price: f64, dec0: f64, dec1: f64) -> f64 {
         let (p0, p1) = self.principal(pool);
-        let current = p0.to_string().parse::<f64>().unwrap() / dec0 * price + p1.to_string().parse::<f64>().unwrap() / dec1;
-        let deposited = self.deposited_t0.to_string().parse::<f64>().unwrap() / dec0 * price
-            + self.deposited_t1.to_string().parse::<f64>().unwrap() / dec1;
-        current.min(deposited)
+        p0.to_string().parse::<f64>().unwrap() / dec0 * price + p1.to_string().parse::<f64>().unwrap() / dec1
     }
 }
 
@@ -211,7 +207,7 @@ fn deploy_virtual(
     wide_alloc: f64,
     dec0: f64,
     dec1: f64,
-) -> (VirtualPosition, VirtualPosition, Option<VirtualPosition>, f64) {
+) -> (VirtualPosition, VirtualPosition, Option<VirtualPosition>, f64, U256, U256) {
     let price = sqrt_price_to_human(pool.slot0.sqrt_price_x96, cfg.token0_decimals, cfg.token1_decimals);
     let ct = pool.slot0.tick;
     let sp = pool.slot0.sqrt_price_x96;
@@ -276,36 +272,12 @@ fn deploy_virtual(
     let wide = VirtualPosition::new(pool, wide_tl, wide_tu, wide_liq, "wide");
     let base = VirtualPosition::new(pool, base_tl, base_tu, base_liq, "base");
 
-    // Limit order: cap excess to 10% of total value to prevent
-    // disproportionate concentrated liquidity
-    let max_limit_usd = total_usd * 0.10;
-    let capped_excess_t1 = if excess_t1_usd > max_limit_usd {
-        U256::from((max_limit_usd * dec1) as u128)
-    } else { excess_t1 };
-    let capped_excess_t0 = if excess_t0_usd > max_limit_usd {
-        U256::from((max_limit_usd / price * dec0) as u128)
-    } else { excess_t0 };
-    let capped_t1_usd = capped_excess_t1.to_string().parse::<f64>().unwrap() / dec1;
-    let capped_t0_usd = capped_excess_t0.to_string().parse::<f64>().unwrap() / dec0 * price;
+    // Virtual positions: no limit order. Excess tokens are undeployed idle capital.
+    // (Limit orders only make sense with real mint where tokens actually convert.)
+    let limit: Option<VirtualPosition> = None;
+    let _ = (excess_t0_usd, excess_t1_usd);
 
-    let mut limit = None;
-    if capped_t1_usd > 0.5 {
-        let lo = ct / cfg.tick_spacing * cfg.tick_spacing + cfg.tick_spacing;
-        let hi = price_to_tick(price * (1.0 + cfg.limit_order_pct / 100.0), cfg.token0_decimals, cfg.token1_decimals, cfg.tick_spacing);
-        if hi > lo {
-            let liq = liquidity_from_amount1(capped_excess_t1, sp, lo, hi, ct);
-            if liq > 0 { limit = Some(VirtualPosition::new(pool, lo, hi, liq, "limit")); }
-        }
-    } else if capped_t0_usd > 0.5 {
-        let lo = price_to_tick(price * (1.0 - cfg.limit_order_pct / 100.0), cfg.token0_decimals, cfg.token1_decimals, cfg.tick_spacing);
-        let hi = ct / cfg.tick_spacing * cfg.tick_spacing;
-        if hi > lo {
-            let liq = liquidity_from_amount0(capped_excess_t0, sp, lo, hi, ct);
-            if liq > 0 { limit = Some(VirtualPosition::new(pool, lo, hi, liq, "limit")); }
-        }
-    }
-
-    (wide, base, limit, borrowed)
+    (wide, base, limit, borrowed, excess_t0, excess_t1)
 }
 
 // ── Process event (clean replay, no simulated positions) ────────────────────
@@ -437,7 +409,7 @@ async fn main() {
     let user_capital_usd = deposit_amount_0.to_string().parse::<f64>().unwrap() / dec0 * entry_price;
     let initial_usdc = U256::from((entry_price * dec1) as u128);
 
-    let (mut wide, mut base, mut limit, borrowed_usdc) = deploy_virtual(
+    let (mut wide, mut base, mut limit, borrowed_usdc, mut idle_t0, mut idle_t1) = deploy_virtual(
         &pool, deposit_amount_0, initial_usdc, &cfg, cfg.wide_alloc_pct, dec0, dec1,
     );
     let mut cumulative_fees_usd: f64 = 0.0;
@@ -485,31 +457,32 @@ async fn main() {
                 cumulative_fees_usd += base.pending_fees_usd(&pool, price, dec0, dec1);
                 if let Some(ref l) = limit { cumulative_fees_usd += l.pending_fees_usd(&pool, price, dec0, dec1); }
 
-                // Principal tokens we'd recover, capped to deposited amounts per position.
-                // Virtual positions can shift between tokens but total value can't exceed deposit.
-                let cap = |p: (U256, U256), d0: U256, d1: U256| -> (U256, U256) {
-                    (p.0.min(d0), p.1.min(d1))
-                };
-                let (wp0, wp1) = cap(wide.principal(&pool), wide.deposited_t0, wide.deposited_t1);
-                let (bp0, bp1) = cap(base.principal(&pool), base.deposited_t0, base.deposited_t1);
+                // Recover principal from wide + base (no capping, IL works naturally)
+                let (wp0, wp1) = wide.principal(&pool);
+                let (bp0, bp1) = base.principal(&pool);
+                // Limit order: cap recovered USD to deposited USD (prevents phantom value)
                 let (lp0, lp1) = limit.as_ref().map_or((U256::ZERO, U256::ZERO), |l| {
-                    // Limit order: deposited single-sided. When converted, tokens shift.
-                    // Cap total value (not per-token) to deposited value.
                     let (p0, p1) = l.principal(&pool);
-                    let dep_total = l.deposited_t0 + l.deposited_t1;
-                    let cur_total = p0 + p1;
-                    if cur_total > dep_total {
-                        // Scale down proportionally
-                        let scale_num = dep_total;
-                        let scale_den = cur_total;
-                        (full_math::mul_div(p0, scale_num, scale_den), full_math::mul_div(p1, scale_num, scale_den))
+                    let cur_usd = p0.to_string().parse::<f64>().unwrap() / dec0 * price
+                        + p1.to_string().parse::<f64>().unwrap() / dec1;
+                    let dep_usd = l.deposited_t0.to_string().parse::<f64>().unwrap() / dec0 * price
+                        + l.deposited_t1.to_string().parse::<f64>().unwrap() / dec1;
+                    if cur_usd > dep_usd * 1.5 && dep_usd > 0.0 {
+                        // Scale down to deposited value
+                        let s = dep_usd / cur_usd;
+                        let s256 = U256::from((s * 1e18) as u128);
+                        let d = U256::from(1_000_000_000_000_000_000u128);
+                        (full_math::mul_div(p0, s256, d), full_math::mul_div(p1, s256, d))
                     } else { (p0, p1) }
                 });
 
-                let tot_t0 = wp0 + bp0 + lp0;
-                let tot_t1 = wp1 + bp1 + lp1;
+                // Add idle tokens back to the recovered pool
+                let tot_t0 = wp0 + bp0 + lp0 + idle_t0;
+                let tot_t1 = wp1 + bp1 + lp1 + idle_t1;
 
-                let (nw, nb, nl, _) = deploy_virtual(&pool, tot_t0, tot_t1, &cfg, cfg.rebal_wide_alloc_pct, dec0, dec1);
+                let (nw, nb, nl, _, new_idle_t0, new_idle_t1) = deploy_virtual(&pool, tot_t0, tot_t1, &cfg, cfg.rebal_wide_alloc_pct, dec0, dec1);
+                idle_t0 = new_idle_t0;
+                idle_t1 = new_idle_t1;
                 wide = nw; base = nb; limit = nl;
                 last_rebal_price = price;
                 last_rebal_block = bn;
@@ -529,7 +502,9 @@ async fn main() {
                 let principal = wide.principal_usd(&pool, price, dec0, dec1)
                     + base.principal_usd(&pool, price, dec0, dec1)
                     + limit.as_ref().map_or(0.0, |l| l.principal_usd(&pool, price, dec0, dec1));
-                let net_val = principal + total_fees - borrowed_usdc;
+                let idle_usd = idle_t0.to_string().parse::<f64>().unwrap() / dec0 * price
+                    + idle_t1.to_string().parse::<f64>().unwrap() / dec1;
+                let net_val = principal + total_fees + idle_usd - borrowed_usdc;
                 let fee_ret = if user_capital_usd > 0.0 { total_fees / user_capital_usd * 100.0 } else { 0.0 };
 
                 snapshots.push(Snapshot { block: bn, cumulative_fees_usd: total_fees, net_position_value_usd: net_val, fee_return_pct: fee_ret });
@@ -551,7 +526,9 @@ async fn main() {
     let principal = wide.principal_usd(&pool, exit_price, dec0, dec1)
         + base.principal_usd(&pool, exit_price, dec0, dec1)
         + limit.as_ref().map_or(0.0, |l| l.principal_usd(&pool, exit_price, dec0, dec1));
-    let total_val = principal + cumulative_fees_usd;
+    let idle_usd = idle_t0.to_string().parse::<f64>().unwrap() / dec0 * exit_price
+        + idle_t1.to_string().parse::<f64>().unwrap() / dec1;
+    let total_val = principal + cumulative_fees_usd + idle_usd;
     let net_val = total_val - borrowed_usdc;
     let overall_pnl = net_val - user_capital_usd;
     let hodl = deposit_amount_0.to_string().parse::<f64>().unwrap() / dec0 * exit_price;
