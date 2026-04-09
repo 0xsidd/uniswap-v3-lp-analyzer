@@ -1,4 +1,4 @@
-rpc = "https://arb-mainnet.g.alchemy.com/v2/y1Fa1Y7JvsDOE5ILzUYdO"
+rpc = "https://arb-mainnet.g.alchemy.com/v2/ugtYcqx8ZMqZP2WRCGn26"
 pool_address = "0xC6962004f452bE9203591991D15f6b388e09E8D0"
 from_block = 99174111
 to_block = 450573739

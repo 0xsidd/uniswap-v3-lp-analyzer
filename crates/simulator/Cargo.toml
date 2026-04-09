@@ -1,0 +1,17 @@
+[package]
+name = "simulator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+v3-pool = { path = "../v3-pool" }
+sim-common = { path = "../common" }
+alloy = { workspace = true }
+mongodb = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+url = { workspace = true }
+futures = "0.3"
+plotters = "0.3"
+chrono = "0.4"

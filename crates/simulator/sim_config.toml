@@ -1,0 +1,21 @@
+rpc = "https://arb-mainnet.g.alchemy.com/v2/ugtYcqx8ZMqZP2WRCGn26"
+pool_address = "0xC6962004f452bE9203591991D15f6b388e09E8D0"
+mongo_uri = "mongodb://localhost:27017"
+db_name = "azoth_simulation"
+fee = 500
+tick_spacing = 10
+
+genesis_block = 99174111
+from_block = 150174111
+to_block = 150974111
+
+# LP position parameters — use price_range_pct OR tick_lower/tick_upper
+# price_range_pct = ±% from current price at from_block (e.g., 30 = ±30%)
+price_range_pct = 30
+deposit_weth = "1000000000000000000"
+
+# Token metadata
+token0_decimals = 18
+token1_decimals = 6
+token0_symbol = "WETH"
+token1_symbol = "USDC"

@@ -9,7 +9,13 @@
       "Bash(bash /tmp/test_compile2.sh)",
       "Bash(cargo test:*)",
       "Bash(python3 -c:*)",
-      "Bash(cargo run:*)"
+      "Bash(cargo run:*)",
+      "Bash(mongosh --quiet --eval 'db.events.findOne\\({blockNumber: {$lte: 120000000}, eventName: \"Swap\"}, {}, {sort: {blockNumber: -1, transactionIndex: -1, logIndex: -1}}\\)' azoth_simulation)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:docs.rs)",
+      "Bash(mongosh --quiet --eval 'db.events.countDocuments\\({blockNumber: {$gte: 99174112, $lte: 99274112}}\\)' azoth_simulation)",
+      "Bash(mongosh --quiet --eval 'db.events.countDocuments\\({blockNumber: {$gte: 99174112, $lte: 99674112}}\\)' azoth_simulation)",
+      "Bash(ls -lh /Users/siddharthpatel/Desktop/Work/Azoth/sim-rust/chart_*.png)"
     ]
   }
 }

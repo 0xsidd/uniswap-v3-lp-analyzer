@@ -6,6 +6,7 @@ members = [
     "crates/event-catcher",
     "crates/v3-pool",
     "crates/replay",
+    "crates/simulator",
 ]
 
 [workspace.dependencies]

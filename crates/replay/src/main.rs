@@ -29,8 +29,9 @@ struct ReplayConfig {
 
 impl ReplayConfig {
     fn load() -> Self {
-        let raw = std::fs::read_to_string("replay_config.toml")
-            .expect("replay_config.toml not found");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("replay_config.toml");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("{} not found", path.display()));
         toml::from_str(&raw).expect("invalid replay_config.toml")
     }
 }
