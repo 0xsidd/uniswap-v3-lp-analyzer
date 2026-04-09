@@ -6,12 +6,9 @@ fee = 500
 tick_spacing = 10
 
 genesis_block = 99174111
-from_block = 150174111
-to_block = 150974111
+from_block = 100174111
+to_block = 110974111
 
-# LP position parameters — use price_range_pct OR tick_lower/tick_upper
-# price_range_pct = ±% from current price at from_block (e.g., 30 = ±30%)
-price_range_pct = 30
 deposit_weth = "1000000000000000000"
 
 # Token metadata
@@ -19,3 +16,25 @@ token0_decimals = 18
 token1_decimals = 6
 token0_symbol = "WETH"
 token1_symbol = "USDC"
+
+# ── Strategy parameters ──────────────────────────────────────────────────
+# Wide range: ±wide_range_pct% from current price
+wide_range_pct = 70
+# Base range: ±base_range_pct% from current price
+base_range_pct = 35
+# Limit order range: single-sided, limit_order_pct% from current price
+limit_order_pct = 10
+
+# Capital allocation at initial deployment
+# wide gets wide_alloc%, base gets (100 - wide_alloc)%
+wide_alloc_pct = 10
+
+# Capital allocation at rebalance
+# wide gets rebal_wide_alloc%, base gets (100 - rebal_wide_alloc)%
+rebal_wide_alloc_pct = 50
+
+# Rebalance triggers (whichever hits first)
+# Rebalance if price moves more than this % from last rebalance price
+rebalance_price_pct = 20
+# Rebalance every N blocks (~345600 blocks = 1 day on Arbitrum)
+rebalance_interval_blocks = 345600

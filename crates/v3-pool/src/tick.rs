@@ -90,7 +90,7 @@ pub fn get_fee_growth_inside(
 fn add_delta(x: u128, y: i128) -> u128 {
     if y < 0 {
         let abs = (-y) as u128;
-        assert!(abs <= x, "LS"); // liquidity sub underflow
+        assert!(abs <= x, "LS");
         x - abs
     } else {
         let result = x + y as u128;

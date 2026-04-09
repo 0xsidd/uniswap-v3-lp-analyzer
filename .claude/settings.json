@@ -15,7 +15,9 @@
       "WebFetch(domain:docs.rs)",
       "Bash(mongosh --quiet --eval 'db.events.countDocuments\\({blockNumber: {$gte: 99174112, $lte: 99274112}}\\)' azoth_simulation)",
       "Bash(mongosh --quiet --eval 'db.events.countDocuments\\({blockNumber: {$gte: 99174112, $lte: 99674112}}\\)' azoth_simulation)",
-      "Bash(ls -lh /Users/siddharthpatel/Desktop/Work/Azoth/sim-rust/chart_*.png)"
+      "Bash(ls -lh /Users/siddharthpatel/Desktop/Work/Azoth/sim-rust/chart_*.png)",
+      "Bash(mongosh --quiet --eval 'db.events.findOne\\({eventName: \"Swap\"}, {args: 1}\\)' azoth_simulation)",
+      "Bash(python3 /tmp/debug_sim.py)"
     ]
   }
 }
