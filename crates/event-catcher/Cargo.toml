@@ -1,0 +1,12 @@
+[package]
+name = "event-catcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sim-config = { path = "../config" }
+sim-common = { path = "../common" }
+alloy = { workspace = true }
+mongodb = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }

@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/config",
+    "crates/common",
+    "crates/event-catcher",
+    "crates/v3-pool",
+    "crates/replay",
+]
+
+[workspace.dependencies]
+alloy = { version = "1", features = ["provider-http", "rpc-types", "sol-types"] }
+mongodb = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+url = "2"

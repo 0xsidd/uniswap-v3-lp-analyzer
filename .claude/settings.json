@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo doc:*)",
+      "Bash(ls /Users/siddharthpatel/Desktop/Work/Azoth/sim-rust/crates/v3-pool/src/math*)",
+      "Bash(cargo check:*)",
+      "Bash(bash /tmp/test_compile.sh)",
+      "Bash(bash /tmp/test_compile2.sh)",
+      "Bash(cargo test:*)",
+      "Bash(python3 -c:*)",
+      "Bash(cargo run:*)"
+    ]
+  }
+}
