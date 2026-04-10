@@ -17,7 +17,11 @@
       "Bash(mongosh --quiet --eval 'db.events.countDocuments\\({blockNumber: {$gte: 99174112, $lte: 99674112}}\\)' azoth_simulation)",
       "Bash(ls -lh /Users/siddharthpatel/Desktop/Work/Azoth/sim-rust/chart_*.png)",
       "Bash(mongosh --quiet --eval 'db.events.findOne\\({eventName: \"Swap\"}, {args: 1}\\)' azoth_simulation)",
-      "Bash(python3 /tmp/debug_sim.py)"
+      "Bash(python3 /tmp/debug_sim.py)",
+      "Bash(mongosh --quiet --eval 'db.events.findOne\\({blockNumber: {$lte: 150174111}, eventName: \"Swap\"}, {args: {liquidity: 1}}, {sort: {blockNumber: -1}}\\)' azoth_simulation)",
+      "Bash(mongosh --quiet --eval 'db.events.findOne\\({eventName: \"Mint\"}, {args: 1}\\)' azoth_simulation)",
+      "Bash(mongosh --quiet --eval 'db.events.findOne\\({eventName: \"Burn\"}, {args: 1}\\)' azoth_simulation)",
+      "Bash(mongosh --quiet --eval ':*)"
     ]
   }
 }
