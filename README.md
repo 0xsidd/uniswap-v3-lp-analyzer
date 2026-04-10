@@ -1,4 +1,4 @@
-# sim-rust
+# Uniswap V3 LP Analyzer
 
 A high-fidelity Uniswap V3 LP strategy backtester written in Rust. Replays real on-chain events through a bit-for-bit accurate pool replica to simulate LP strategies with real minting, rebalancing, and fee tracking.
 
