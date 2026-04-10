@@ -1,4 +1,3 @@
-rpc = "https://arb-mainnet.g.alchemy.com/v2/ugtYcqx8ZMqZP2WRCGn26"
 pool_address = "0xC6962004f452bE9203591991D15f6b388e09E8D0"
 mongo_uri = "mongodb://localhost:27017"
 db_name = "azoth_simulation"

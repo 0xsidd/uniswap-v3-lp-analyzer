@@ -3,7 +3,6 @@ use std::path::Path;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
-    pub rpc: String,
     pub pool_address: String,
     pub from_block: u64,
     pub to_block: u64,

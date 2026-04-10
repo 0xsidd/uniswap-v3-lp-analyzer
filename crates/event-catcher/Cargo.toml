@@ -10,3 +10,4 @@ alloy = { workspace = true }
 mongodb = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
+dotenvy = { workspace = true }

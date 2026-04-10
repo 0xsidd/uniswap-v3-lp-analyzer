@@ -24,7 +24,7 @@ const SIM_LIMIT: Address = Address::new([0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0xDE,0x
 // ── Config ──────────────────────────────────────────────────────────────────
 #[derive(Debug, Deserialize)]
 struct SimConfig {
-    rpc: String, pool_address: String, mongo_uri: String, db_name: String,
+    pool_address: String, mongo_uri: String, db_name: String,
     fee: u32, tick_spacing: i32,
     genesis_block: u64, from_block: u64, to_block: u64,
     deposit_weth: String,
@@ -315,6 +315,7 @@ fn draw_charts(snapshots: &[Snapshot], from_block: u64, from_ts: u64) {
 // ── Main ────────────────────────────────────────────────────────────────────
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
     let cfg = SimConfig::load();
     let deposit_amount_0 = U256::from_str(&cfg.deposit_weth).unwrap();
     let dec0 = 10f64.powi(cfg.token0_decimals as i32);
@@ -497,7 +498,7 @@ async fn main() {
     let total_t1_h = total_t1 as f64 / dec1;
 
     // Use on-chain exit price for valuation
-    let rpc_url: url::Url = cfg.rpc.parse().unwrap();
+    let rpc_url: url::Url = std::env::var("RPC_URL").expect("RPC_URL not set in .env").parse().unwrap();
     let prov = ProviderBuilder::new().connect_http(rpc_url);
     let contract = IUniswapV3Pool::new(cfg.pool_address.parse::<Address>().unwrap(), &prov);
 

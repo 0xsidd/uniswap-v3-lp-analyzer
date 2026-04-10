@@ -10,10 +10,11 @@ use sim_config::Config;
 
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
     let cfg = Config::load();
     let pool_addr: Address = cfg.pool_address.parse().expect("invalid pool_address");
 
-    let rpc_url: url::Url = cfg.rpc.parse().expect("invalid rpc url");
+    let rpc_url: url::Url = std::env::var("RPC_URL").expect("RPC_URL not set in .env").parse().expect("invalid RPC_URL");
     let provider = ProviderBuilder::new().connect_http(rpc_url);
 
     // ── MongoDB setup ───────────────────────────────────────────────────────

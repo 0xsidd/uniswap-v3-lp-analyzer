@@ -17,7 +17,6 @@ use v3_pool::pool::UniswapV3Pool;
 
 #[derive(Debug, Deserialize)]
 struct ReplayConfig {
-    rpc: String,
     pool_address: String,
     from_block: u64,
     verify_at_block: u64,
@@ -322,7 +321,8 @@ async fn main() {
     // ── Verify against on-chain state ───────────────────────────────────────
     println!("\n--- On-Chain Verification at block {} ---", cfg.verify_at_block);
 
-    let rpc_url: url::Url = cfg.rpc.parse().expect("invalid rpc url");
+    dotenvy::dotenv().ok();
+    let rpc_url: url::Url = std::env::var("RPC_URL").expect("RPC_URL not set in .env").parse().expect("invalid RPC_URL");
     let provider = ProviderBuilder::new().connect_http(rpc_url);
     let pool_address: Address = cfg.pool_address.parse().expect("invalid pool_address");
 
