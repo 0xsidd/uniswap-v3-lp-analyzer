@@ -1,33 +1,6 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(cargo build:*)",
-      "Bash(cargo doc:*)",
-      "Bash(ls /Users/siddharthpatel/Desktop/Work/Azoth/sim-rust/crates/v3-pool/src/math*)",
-      "Bash(cargo check:*)",
-      "Bash(bash /tmp/test_compile.sh)",
-      "Bash(bash /tmp/test_compile2.sh)",
-      "Bash(cargo test:*)",
-      "Bash(python3 -c:*)",
-      "Bash(cargo run:*)",
-      "Bash(mongosh --quiet --eval 'db.events.findOne\\({blockNumber: {$lte: 120000000}, eventName: \"Swap\"}, {}, {sort: {blockNumber: -1, transactionIndex: -1, logIndex: -1}}\\)' azoth_simulation)",
-      "WebFetch(domain:crates.io)",
-      "WebFetch(domain:docs.rs)",
-      "Bash(mongosh --quiet --eval 'db.events.countDocuments\\({blockNumber: {$gte: 99174112, $lte: 99274112}}\\)' azoth_simulation)",
-      "Bash(mongosh --quiet --eval 'db.events.countDocuments\\({blockNumber: {$gte: 99174112, $lte: 99674112}}\\)' azoth_simulation)",
-      "Bash(ls -lh /Users/siddharthpatel/Desktop/Work/Azoth/sim-rust/chart_*.png)",
-      "Bash(mongosh --quiet --eval 'db.events.findOne\\({eventName: \"Swap\"}, {args: 1}\\)' azoth_simulation)",
-      "Bash(python3 /tmp/debug_sim.py)",
-      "Bash(mongosh --quiet --eval 'db.events.findOne\\({blockNumber: {$lte: 150174111}, eventName: \"Swap\"}, {args: {liquidity: 1}}, {sort: {blockNumber: -1}}\\)' azoth_simulation)",
-      "Bash(mongosh --quiet --eval 'db.events.findOne\\({eventName: \"Mint\"}, {args: 1}\\)' azoth_simulation)",
-      "Bash(mongosh --quiet --eval 'db.events.findOne\\({eventName: \"Burn\"}, {args: 1}\\)' azoth_simulation)",
-      "Bash(mongosh --quiet --eval ':*)",
-      "Bash(grep \",1$\\\\|,2$\\\\|,3$\\\\|,4$\\\\|,5$\" /Users/siddharthpatel/Desktop/Work/Azoth/sim-rust/crates/simulator/simulation_data.csv)",
-      "Read(//Users/siddharthpatel/Desktop/Work/Azoth/sim-rust/NR>1 { total=$2+$3+$4+$5+$6+$7; lim=$6+$7; if\\(total>0\\) pct=lim/**)",
-      "Read(//Users/siddharthpatel/Desktop/Work/Azoth/sim-rust/**)",
-      "Read(//Users/siddharthpatel/Desktop/Work/Azoth/sim-rust/NR==1{next} { prev_r=r; r=$8; total=$2+$3+$4+$5+$6+$7; lim=$6+$7; pct=\\(total>0\\)?lim/**)",
-      "Bash(python3)",
-      "Bash(python3 /dev/stdin)"
-    ]
+    "defaultMode": "bypassPermissions",
+    "allow": ["Bash(*)", "Read(*)", "Edit(*)", "Write(*)", "Glob(*)", "Grep(*)"]
   }
 }
