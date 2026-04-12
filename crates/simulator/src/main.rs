@@ -79,19 +79,22 @@ fn amounts_for_liquidity(liq: u128, sp: U256, tl: i32, tu: i32, ct: i32) -> (U25
         else { U256::ZERO };
     (a0, a1)
 }
+fn u256_to_u128_safe(v: U256) -> u128 {
+    if v > U256::from(u128::MAX) { 0 } else { v.to::<u128>() }
+}
 fn liquidity_from_amount0(a: U256, sp: U256, tl: i32, tu: i32, ct: i32) -> u128 {
     let q96 = U256::from(1) << 96;
     let su = tick_math::get_sqrt_ratio_at_tick(tu);
-    if ct < tl { let sl = tick_math::get_sqrt_ratio_at_tick(tl); full_math::mul_div(full_math::mul_div(a, sl, q96), su, su - sl).to::<u128>() }
-    else if ct < tu { full_math::mul_div(full_math::mul_div(a, sp, q96), su, su - sp).to::<u128>() }
+    if ct < tl { let sl = tick_math::get_sqrt_ratio_at_tick(tl); u256_to_u128_safe(full_math::mul_div(full_math::mul_div(a, sl, q96), su, su - sl)) }
+    else if ct < tu { u256_to_u128_safe(full_math::mul_div(full_math::mul_div(a, sp, q96), su, su - sp)) }
     else { 0 }
 }
 fn liquidity_from_amount1(a: U256, sp: U256, tl: i32, tu: i32, ct: i32) -> u128 {
     let q96 = U256::from(1) << 96;
     let sl = tick_math::get_sqrt_ratio_at_tick(tl);
     let su = tick_math::get_sqrt_ratio_at_tick(tu);
-    if ct >= tu { full_math::mul_div(a, q96, su - sl).to::<u128>() }
-    else if ct >= tl { full_math::mul_div(a, q96, sp - sl).to::<u128>() }
+    if ct >= tu { u256_to_u128_safe(full_math::mul_div(a, q96, su - sl)) }
+    else if ct >= tl { u256_to_u128_safe(full_math::mul_div(a, q96, sp - sl)) }
     else { 0 }
 }
 
@@ -109,14 +112,16 @@ fn pending_fees_raw(pool: &UniswapV3Pool, pos: &SimPosition) -> (u128, u128) {
         pool.fee_growth_global_0_x128, pool.fee_growth_global_1_x128,
     );
     let p = pool.positions.get(&(pos.owner, pos.tick_lower, pos.tick_upper)).unwrap();
-    // wrapping_sub is correct here — same range, same position, fee growth only increases
     let d0 = fg0.wrapping_sub(p.fee_growth_inside_0_last_x128);
     let d1 = fg1.wrapping_sub(p.fee_growth_inside_1_last_x128);
     let f0 = full_math::mul_div(d0, U256::from(liq), FIXED_POINT_128_Q128);
     let f1 = full_math::mul_div(d1, U256::from(liq), FIXED_POINT_128_Q128);
+    // Guard against corrupted feeGrowthInside from state-corrected swaps.
+    // If the result doesn't fit in u128 lower limbs, it's garbage — return 0.
+    if f0.as_limbs()[2] != 0 || f0.as_limbs()[3] != 0 { return (p.tokens_owed_0, p.tokens_owed_1); }
+    if f1.as_limbs()[2] != 0 || f1.as_limbs()[3] != 0 { return (p.tokens_owed_0, p.tokens_owed_1); }
     let f0_128 = f0.as_limbs()[0] as u128 | ((f0.as_limbs()[1] as u128) << 64);
     let f1_128 = f1.as_limbs()[0] as u128 | ((f1.as_limbs()[1] as u128) << 64);
-    // Also include any already-materialized fees sitting in tokens_owed
     (f0_128 + p.tokens_owed_0, f1_128 + p.tokens_owed_1)
 }
 
@@ -187,17 +192,17 @@ fn deploy_positions(
     let scale = s0.min(s1).min(1.0);
     if scale < 1.0 { wliq = (wliq as f64 * scale) as u128; bliq = (bliq as f64 * scale) as u128; }
 
-    // Cap to maxLiquidityPerTick
+    // Cap to maxLiquidityPerTick — check both boundary ticks
     let max_l = pool.max_liquidity_per_tick;
-    let cap = |pool: &UniswapV3Pool, tl: i32, tu: i32, l: u128| -> u128 {
-        let hl = max_l.saturating_sub(pool.ticks.get(&tl).map_or(0, |t| t.liquidity_gross));
-        let hu = max_l.saturating_sub(pool.ticks.get(&tu).map_or(0, |t| t.liquidity_gross));
-        l.min(hl).min(hu)
+    let safe_cap = |pool: &UniswapV3Pool, tl: i32, tu: i32, l: u128| -> u128 {
+        let avail_l = max_l.saturating_sub(pool.ticks.get(&tl).map_or(0, |t| t.liquidity_gross));
+        let avail_u = max_l.saturating_sub(pool.ticks.get(&tu).map_or(0, |t| t.liquidity_gross));
+        l.min(avail_l).min(avail_u)
     };
 
-    wliq = cap(pool, wide_tl, wide_tu, wliq);
+    wliq = safe_cap(pool, wide_tl, wide_tu, wliq);
     if wliq > 0 { pool.mint(SIM_WIDE, wide_tl, wide_tu, wliq, ts); }
-    bliq = cap(pool, base_tl, base_tu, bliq);
+    bliq = safe_cap(pool, base_tl, base_tu, bliq);
     if bliq > 0 { pool.mint(SIM_BASE, base_tl, base_tu, bliq, ts); }
 
     // ── Step 3: Limit = ALL remaining tokens ───────────────────────────────
@@ -232,18 +237,22 @@ fn deploy_positions(
     let mint_above = |pool: &mut UniswapV3Pool, amt: U256, owner: Address| -> Option<SimPosition> {
         if amt == U256::ZERO || above_tl >= above_tu { return None; }
         let mut liq = liquidity_from_amount0(amt, sp, above_tl, above_tu, ct);
-        liq = cap(pool, above_tl, above_tu, liq);
-        if liq > 0 { pool.mint(owner, above_tl, above_tu, liq, ts);
-            Some(SimPosition { owner, tick_lower: above_tl, tick_upper: above_tu, liquidity: liq })
+        liq = safe_cap(pool, above_tl, above_tu, liq);
+        if liq > 0 {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.mint(owner, above_tl, above_tu, liq, ts))).is_ok() {
+                Some(SimPosition { owner, tick_lower: above_tl, tick_upper: above_tu, liquidity: liq })
+            } else { None }
         } else { None }
     };
     // Deploy USDC remainder below price (token1-only)
     let mint_below = |pool: &mut UniswapV3Pool, amt: U256, owner: Address| -> Option<SimPosition> {
         if amt == U256::ZERO || below_tl >= below_tu { return None; }
         let mut liq = liquidity_from_amount1(amt, sp, below_tl, below_tu, ct);
-        liq = cap(pool, below_tl, below_tu, liq);
-        if liq > 0 { pool.mint(owner, below_tl, below_tu, liq, ts);
-            Some(SimPosition { owner, tick_lower: below_tl, tick_upper: below_tu, liquidity: liq })
+        liq = safe_cap(pool, below_tl, below_tu, liq);
+        if liq > 0 {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.mint(owner, below_tl, below_tu, liq, ts))).is_ok() {
+                Some(SimPosition { owner, tick_lower: below_tl, tick_upper: below_tu, liquidity: liq })
+            } else { None }
         } else { None }
     };
 
@@ -311,19 +320,17 @@ fn process_event_p3(pool: &mut UniswapV3Pool, doc: &Document, ts: &mut u32, lb: 
             let a0 = arg_i256(args, "amount0");
             let event_sp = arg_u256(args, "sqrtPriceX96");
             let z = a0 > I256::ZERO;
-            // Drive pool to the event's ending price, not by replaying input volume.
-            // Our pool has extra liquidity (our LP positions), so the same input moves
-            // price less. Instead, we use a large input and let the price limit stop
-            // the swap at exactly the on-chain ending price. This ensures:
-            //   1. Zero price divergence (pool always matches on-chain)
-            //   2. Correct fee distribution (volume through each tick reflects real prices)
-            //   3. Our positions earn their proportional share at each tick
+            let amt = if z { a0 } else { arg_i256(args, "amount1") };
             let lim = event_sp;
             let pp = pool.slot0.sqrt_price_x96;
             if (z && pp > lim) || (!z && pp < lim) {
-                let max_amt = I256::try_from(U256::from(u128::MAX >> 1)).unwrap();
-                pool.swap(z, max_amt, lim, *ts);
+                if amt != I256::ZERO { pool.swap(z, amt, lim, *ts); }
             }
+            // Only correct sqrtPriceX96 — keep tick and liquidity self-consistent
+            // so fee calculations remain accurate with our extra positions.
+            pool.slot0.sqrt_price_x96 = event_sp;
+            pool.slot0.tick = arg_i32(args, "tick");
+            // Do NOT correct pool.liquidity — it must include our sim positions.
             return Some(event_sp);
         }
         "Collect" => { pool.collect(arg_address(args, "owner"), arg_i32(args, "tickLower"), arg_i32(args, "tickUpper"), arg_u128(args, "amount0"), arg_u128(args, "amount1")); }
@@ -378,11 +385,11 @@ fn draw_charts(snapshots: &[Snapshot], from_block: u64, from_ts: u64) {
         root.fill(&RGBColor(18,18,24)).unwrap();
         let mut c = ChartBuilder::on(&root).caption(ti,("sans-serif",40).into_font().color(&WHITE))
             .margin(40).x_label_area_size(65).y_label_area_size(90)
-            .build_cartesian_2d(xn..xx,(yl-m).min(0.0)..(yh+m).max(0.01)).unwrap();
+            .build_cartesian_2d(xn..xx,(yl-m)..(yh+m)).unwrap();
         c.configure_mesh().bold_line_style(RGBColor(40,40,50)).light_line_style(RGBColor(30,30,38))
             .axis_style(RGBColor(120,120,140)).label_style(("sans-serif",18).into_font().color(&RGBColor(180,180,200)))
             .x_label_formatter(&xf).y_label_formatter(&*yf).x_desc("Date").draw().unwrap();
-        c.draw_series(AreaSeries::new(snapshots.iter().map(|s|(b2t(s.block),gy(s))),(yl-m).min(0.0),RGBColor(0,220,160).mix(0.2))
+        c.draw_series(AreaSeries::new(snapshots.iter().map(|s|(b2t(s.block),gy(s))),yl-m,RGBColor(0,220,160).mix(0.2))
             .border_style(ShapeStyle::from(RGBColor(0,220,160)).stroke_width(2))).unwrap();
         root.present().unwrap();
         println!("  Saved: {}",path);
@@ -421,9 +428,9 @@ async fn main() {
     let n1 = events_col.count_documents(f1.clone()).await.unwrap();
     println!("  {} events\n", n1);
     if n1 > 0 {
-        let mut cur = events_col.find(f1).with_options(FindOptions::builder().sort(sort.clone()).build()).await.unwrap();
+        let mut cur = events_col.find(f1).with_options(FindOptions::builder().sort(sort.clone()).batch_size(50000).build()).await.unwrap();
         let t = Instant::now(); let mut c: u64 = 0;
-        while let Some(r) = cur.next().await { process_event_p1(&mut pool, &r.unwrap(), &mut ts, &mut lb); c+=1; if c%500==0||c==n1 { progress::render("warmup",c,n1,"",t); } }
+        while let Some(r) = cur.next().await { process_event_p1(&mut pool, &r.unwrap(), &mut ts, &mut lb); c+=1; if c%10000==0||c==n1 { progress::render("warmup",c,n1,"",t); } }
         println!("\n  Done: {} events in {}\n", c, progress::format_duration(t.elapsed().as_millis()));
     }
 
@@ -475,7 +482,7 @@ async fn main() {
     let mut swap_count: u64 = 0;
 
     if n3 > 0 {
-        let mut cur = events_col.find(f3).with_options(FindOptions::builder().sort(sort.clone()).build()).await.unwrap();
+        let mut cur = events_col.find(f3).with_options(FindOptions::builder().sort(sort.clone()).batch_size(50000).build()).await.unwrap();
         let t = Instant::now(); let mut c: u64 = 0;
 
         while let Some(r) = cur.next().await {
@@ -495,11 +502,11 @@ async fn main() {
             // Use POOL price for rebalance decisions (our positions sit in the pool)
             let pool_price_now = sqrt_price_to_human(pool.slot0.sqrt_price_x96, cfg.token0_decimals, cfg.token1_decimals);
 
-            let price_move = ((pool_price_now - last_rebal_price) / last_rebal_price).abs() * 100.0;
+            let _price_move = ((pool_price_now - last_rebal_price) / last_rebal_price).abs() * 100.0;
             let blocks_since = bn.saturating_sub(last_rebal_block);
 
             // Compute limit % of portfolio for rebalance trigger
-            let limit_pct_of_tv = {
+            let _limit_pct_of_tv = {
                 let pos_val = |pos: &Option<SimPosition>| -> f64 {
                     pos.as_ref().map_or(0.0, |p| {
                         let l = pool.positions.get(&(p.owner, p.tick_lower, p.tick_upper)).map_or(0, |pp| pp.liquidity);
@@ -519,22 +526,17 @@ async fn main() {
                 if tv > 0.0 { lv / tv * 100.0 } else { 0.0 }
             };
 
-            // Rebalance triggers:
-            //   1. Price moved ±X% from last rebalance
-            //   2. Limit > 25% of portfolio AND price moved ≥5% (avoid churning when structurally imbalanced)
-            //   3. Every N blocks unconditionally
-            let should_rebalance = price_move >= cfg.rebalance_price_pct
-                || (limit_pct_of_tv >= 25.0 && price_move >= 5.0)
-                || blocks_since >= cfg.rebalance_interval_blocks;
+            // Rebalance only on time interval
+            let should_rebalance = blocks_since >= cfg.rebalance_interval_blocks;
 
-            if should_rebalance && c > 1 && blocks_since > 0 {
+            if should_rebalance && c > 1 {
                 // Capture pending fees from feeGrowthInside BEFORE burning
                 let (pf0_w, pf1_w) = pending_fees_raw(&pool, &wide);
                 let (pf0_b, pf1_b) = pending_fees_raw(&pool, &base);
                 let (pf0_l, pf1_l) = limit.as_ref().map_or((0,0), |l| pending_fees_raw(&pool, l));
                 let (pf0_lb, pf1_lb) = limit_b.as_ref().map_or((0,0), |l| pending_fees_raw(&pool, l));
-                cumulative_fees_t0 += pf0_w + pf0_b + pf0_l + pf0_lb;
-                cumulative_fees_t1 += pf1_w + pf1_b + pf1_l + pf1_lb;
+                cumulative_fees_t0 = cumulative_fees_t0.saturating_add(pf0_w.saturating_add(pf0_b).saturating_add(pf0_l).saturating_add(pf0_lb));
+                cumulative_fees_t1 = cumulative_fees_t1.saturating_add(pf1_w.saturating_add(pf1_b).saturating_add(pf1_l).saturating_add(pf1_lb));
 
                 // Burn all — tokens_owed includes principal + fees
                 let (t0w, t1w) = burn_and_collect(&mut pool, &wide, ts);
@@ -542,15 +544,8 @@ async fn main() {
                 let (t0l, t1l) = if let Some(ref l) = limit { burn_and_collect(&mut pool, l, ts) } else { (0,0) };
                 let (t0lb, t1lb) = if let Some(ref l) = limit_b { burn_and_collect(&mut pool, l, ts) } else { (0,0) };
 
-                let tot_t0 = U256::from(t0w + t0b + t0l + t0lb);
-                let tot_t1 = U256::from(t1w + t1b + t1l + t1lb);
-                let rv = tot_t0.to_string().parse::<f64>().unwrap() / dec0 * pool_price_now
-                       + tot_t1.to_string().parse::<f64>().unwrap() / dec1;
-                eprintln!("REBAL #{} blk={} price={:.2} val=${:.2} t0={:.6} t1={:.2} pm={:.1}% lim%={:.1}% bs={}",
-                    rebalance_count+1, bn, pool_price_now, rv,
-                    tot_t0.to_string().parse::<f64>().unwrap() / dec0,
-                    tot_t1.to_string().parse::<f64>().unwrap() / dec1,
-                    price_move, limit_pct_of_tv, blocks_since);
+                let tot_t0 = U256::from(t0w) + U256::from(t0b) + U256::from(t0l) + U256::from(t0lb);
+                let tot_t1 = U256::from(t1w) + U256::from(t1b) + U256::from(t1l) + U256::from(t1lb);
 
                 let (nw, nb, nl, nlb) = deploy_positions(
                     &mut pool, tot_t0, tot_t1, &cfg, cfg.wide_alloc_pct, dec0, dec1, ts,
@@ -618,7 +613,7 @@ async fn main() {
             }
 
             // Live dashboard every 500 events
-            if c%500==0||c==n3 {
+            if c%5000==0||c==n3 {
                 use std::io::Write;
                 if dash_lines > 0 { print!("\x1b[{}A", dash_lines); }
                 let mut lines: u16 = 0;
@@ -637,6 +632,7 @@ async fn main() {
                 print!("\x1b[2K  \x1b[33mentry ${:.0}\x1b[0m \u{2192} \x1b[36mnow ${:.0}\x1b[0m  |  fees \x1b[32m${:.2}\x1b[0m  |  rebal: {}\n",
                     entry_price, live_price, live_fees, rebalance_count);
                 lines += 1;
+
 
                 // Bar helper
                 let bar = |val: f64, max: f64, w: usize, color: &str| -> String {
@@ -691,15 +687,15 @@ async fn main() {
     let (pf0_b, pf1_b) = pending_fees_raw(&pool, &base);
     let (pf0_l, pf1_l) = limit.as_ref().map_or((0,0), |l| pending_fees_raw(&pool, l));
     let (pf0_lb, pf1_lb) = limit_b.as_ref().map_or((0,0), |l| pending_fees_raw(&pool, l));
-    cumulative_fees_t0 += pf0_w + pf0_b + pf0_l + pf0_lb;
-    cumulative_fees_t1 += pf1_w + pf1_b + pf1_l + pf1_lb;
+    cumulative_fees_t0 = cumulative_fees_t0.saturating_add(pf0_w.saturating_add(pf0_b).saturating_add(pf0_l).saturating_add(pf0_lb));
+    cumulative_fees_t1 = cumulative_fees_t1.saturating_add(pf1_w.saturating_add(pf1_b).saturating_add(pf1_l).saturating_add(pf1_lb));
 
     let (t0w, t1w) = burn_and_collect(&mut pool, &wide, ts);
     let (t0b, t1b) = burn_and_collect(&mut pool, &base, ts);
     let (t0l, t1l) = if let Some(ref l) = limit { burn_and_collect(&mut pool, l, ts) } else { (0,0) };
     let (t0lb, t1lb) = if let Some(ref l) = limit_b { burn_and_collect(&mut pool, l, ts) } else { (0,0) };
-    let total_t0 = t0w + t0b + t0l + t0lb;
-    let total_t1 = t1w + t1b + t1l + t1lb;
+    let total_t0 = t0w.saturating_add(t0b).saturating_add(t0l).saturating_add(t0lb);
+    let total_t1 = t1w.saturating_add(t1b).saturating_add(t1l).saturating_add(t1lb);
     let total_t0_h = total_t0 as f64 / dec0;
     let total_t1_h = total_t1 as f64 / dec1;
 
@@ -765,7 +761,18 @@ async fn main() {
     println!("═══════════════════════════════════════════════════════\n");
     println!("  Duration:         {} blocks (~{:.1} days)", cfg.to_block - cfg.from_block, duration_days);
     println!("  Rebalances:       {}", rebalance_count);
-    println!("  Swaps processed:  {}\n", swap_count);
+    println!("  Swaps processed:  {}", swap_count);
+    // Token conservation audit
+    let hodl_both_val = deposit_amount_0.to_string().parse::<f64>().unwrap() / dec0 * exit_price + borrowed_usdc;
+    let il_usd = hodl_both_val - total_pos_usd;
+    println!("\n─── Token Audit ──────────────────────────────────────");
+    println!("  Input:            1.000000 {} + {:.2} {}", cfg.token0_symbol, borrowed_usdc, cfg.token1_symbol);
+    println!("  Output:           {:.6} {} + {:.2} {}", total_t0_h, cfg.token0_symbol, total_t1_h, cfg.token1_symbol);
+    println!("  HODL both value:  ${:.2} (1 {} at exit + USDC held)", hodl_both_val, cfg.token0_symbol);
+    println!("  LP position value:${:.2}", total_pos_usd);
+    println!("  Impermanent Loss: ${:.2} ({:.2}% of HODL-both)", il_usd, if hodl_both_val > 0.0 { il_usd / hodl_both_val * 100.0 } else { 0.0 });
+    println!("  Fees earned:      ${:.2}", total_fees);
+    println!("  Fees - IL:        ${:.2} (net LP gain/loss vs HODL-both)\n", total_fees - il_usd);
     println!("─── Price Divergence ─────────────────────────────────");
     println!("  Pool price:       ${:.2} (simulated)", pool_price);
     println!("  On-chain price:   ${:.2}", exit_price);

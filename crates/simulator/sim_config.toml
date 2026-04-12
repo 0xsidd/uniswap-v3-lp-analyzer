@@ -5,8 +5,8 @@ fee = 500
 tick_spacing = 10
 
 genesis_block = 99174111
-from_block = 100174111
-to_block = 110174111
+from_block = 110174111
+to_block = 120174111
 
 deposit_weth = "1000000000000000000"
 

@@ -18,3 +18,10 @@ tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 url = "2"
 dotenvy = "0.15"
+
+# Fast dev builds with optimized dependencies (U256 math, MongoDB driver)
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
