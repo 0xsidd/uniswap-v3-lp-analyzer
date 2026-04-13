@@ -33,8 +33,12 @@ struct SimConfig {
     wide_range_pct: f64, base_range_pct: f64, limit_order_pct: f64,
     wide_alloc_pct: f64,
     rebalance_price_pct: f64, rebalance_interval_blocks: u64,
+    #[serde(default = "default_rebalance_strategy")]
+    rebalance_strategy: String,
     write_csv: bool,
 }
+fn default_rebalance_strategy() -> String { "time_only".to_string() }
+
 impl SimConfig {
     fn load() -> Self {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sim_config.toml");
@@ -218,8 +222,8 @@ fn deploy_positions(
     let rem0_val = remaining_t0.to_string().parse::<f64>().unwrap() / dec0 * price;
     let rem1_val = remaining_t1.to_string().parse::<f64>().unwrap() / dec1;
 
-    let mut limit: Option<SimPosition> = None;
-    let mut limit_b: Option<SimPosition> = None;
+    let limit: Option<SimPosition>;
+    let limit_b: Option<SimPosition>;
     let limit_pct = cfg.limit_order_pct / 100.0;
     let ts_i = cfg.tick_spacing;
     let aligned = if ct >= 0 { (ct / ts_i) * ts_i } else { ((ct - ts_i + 1) / ts_i) * ts_i };
@@ -308,14 +312,22 @@ fn process_event_p1(pool: &mut UniswapV3Pool, doc: &Document, ts: &mut u32, lb: 
 // Swaps: same input volume, pool computes own output & price
 // Mint/Burn: use LIQUIDITY from event (not token amounts)
 // Result: pool self-consistent with our positions minted in
-fn process_event_p3(pool: &mut UniswapV3Pool, doc: &Document, ts: &mut u32, lb: &mut i64) -> Option<U256> {
+fn process_event_p3(pool: &mut UniswapV3Pool, doc: &Document, ts: &mut u32, lb: &mut i64) -> Option<(U256, U256)> {
     let name = doc.get_str("eventName").unwrap();
     let args = doc.get_document("args").unwrap();
     let bn = doc.get_i64("blockNumber").unwrap_or(0);
     if bn != *lb { *ts += 1; *lb = bn; }
     match name {
-        "Mint" => { pool.mint(arg_address(args, "owner"), arg_i32(args, "tickLower"), arg_i32(args, "tickUpper"), arg_u128(args, "amount"), *ts); }
-        "Burn" => { pool.burn(arg_address(args, "owner"), arg_i32(args, "tickLower"), arg_i32(args, "tickUpper"), arg_u128(args, "amount"), *ts); }
+        "Mint" => {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.mint(arg_address(args, "owner"), arg_i32(args, "tickLower"), arg_i32(args, "tickUpper"), arg_u128(args, "amount"), *ts))).is_err() {
+                pool.slot0.unlocked = true;
+            }
+        }
+        "Burn" => {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.burn(arg_address(args, "owner"), arg_i32(args, "tickLower"), arg_i32(args, "tickUpper"), arg_u128(args, "amount"), *ts))).is_err() {
+                pool.slot0.unlocked = true;
+            }
+        }
         "Swap" => {
             let a0 = arg_i256(args, "amount0");
             let event_sp = arg_u256(args, "sqrtPriceX96");
@@ -324,14 +336,19 @@ fn process_event_p3(pool: &mut UniswapV3Pool, doc: &Document, ts: &mut u32, lb: 
             let lim = event_sp;
             let pp = pool.slot0.sqrt_price_x96;
             if (z && pp > lim) || (!z && pp < lim) {
-                if amt != I256::ZERO { pool.swap(z, amt, lim, *ts); }
+                if amt != I256::ZERO {
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.swap(z, amt, lim, *ts))).is_err() {
+                        pool.slot0.unlocked = true;
+                    }
+                }
             }
-            // Only correct sqrtPriceX96 — keep tick and liquidity self-consistent
-            // so fee calculations remain accurate with our extra positions.
+            // Capture pool's computed price BEFORE correction
+            let pre_correction_sp = pool.slot0.sqrt_price_x96;
+            // Correct to on-chain price
             pool.slot0.sqrt_price_x96 = event_sp;
             pool.slot0.tick = arg_i32(args, "tick");
             // Do NOT correct pool.liquidity — it must include our sim positions.
-            return Some(event_sp);
+            return Some((event_sp, pre_correction_sp));
         }
         "Collect" => { pool.collect(arg_address(args, "owner"), arg_i32(args, "tickLower"), arg_i32(args, "tickUpper"), arg_u128(args, "amount0"), arg_u128(args, "amount1")); }
         "Flash" => { pool.flash_with_paid(arg_u256(args, "paid0"), arg_u256(args, "paid1")); }
@@ -400,6 +417,8 @@ fn draw_charts(snapshots: &[Snapshot], from_block: u64, from_ts: u64) {
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
+    // Suppress panic messages from caught pool arithmetic overflows in P3 replay
+    std::panic::set_hook(Box::new(|_| {}));
     let cfg = SimConfig::load();
     let deposit_amount_0 = U256::from_str(&cfg.deposit_weth).unwrap();
     let dec0 = 10f64.powi(cfg.token0_decimals as i32);
@@ -414,7 +433,8 @@ async fn main() {
     println!("  LP exit:         {}", cfg.to_block);
     println!("  Wide: ±{:.0}%  Base: ±{:.0}%  Limit: ±{:.0}%", cfg.wide_range_pct, cfg.base_range_pct, cfg.limit_order_pct);
     println!("  Alloc:           {:.0}% wide / {:.0}% base", cfg.wide_alloc_pct, 100.0 - cfg.wide_alloc_pct);
-    println!("  Rebal trigger:   >{:.0}% price OR limit>25% OR ({}blk AND limit>10%)\n", cfg.rebalance_price_pct, cfg.rebalance_interval_blocks);
+    println!("  Strategy:        {}", cfg.rebalance_strategy);
+    println!("  Rebal trigger:   >{:.0}% price | {}blk interval\n", cfg.rebalance_price_pct, cfg.rebalance_interval_blocks);
 
     let mongo = MongoClient::with_uri_str(&cfg.mongo_uri).await.unwrap();
     let events_col = mongo.database(&cfg.db_name).collection::<Document>("events");
@@ -450,6 +470,9 @@ async fn main() {
     // Track cumulative fees from feeGrowthInside (price-independent, monotonic)
     let mut cumulative_fees_t0: u128 = 0;
     let mut cumulative_fees_t1: u128 = 0;
+    // Per-rebalance IL tracking
+    let mut total_rebal_il: f64 = 0.0;
+    let mut worst_rebal_il: f64 = 0.0;
 
     println!("  {} price:       ${:.2}", cfg.token0_symbol, entry_price);
     println!("  User capital:     ${:.2}", user_capital_usd);
@@ -480,6 +503,7 @@ async fn main() {
     let mut max_div_bps: f64 = 0.0;
     let mut total_div: f64 = 0.0;
     let mut swap_count: u64 = 0;
+    let mut cumul_correction_usd: f64 = 0.0;
 
     if n3 > 0 {
         let mut cur = events_col.find(f3).with_options(FindOptions::builder().sort(sort.clone()).batch_size(50000).build()).await.unwrap();
@@ -488,48 +512,76 @@ async fn main() {
         while let Some(r) = cur.next().await {
             let doc = r.unwrap();
             let bn = doc.get_i64("blockNumber").unwrap_or(0) as u64;
+
             let event_sp = process_event_p3(&mut pool, &doc, &mut ts, &mut lb);
             c += 1;
 
-            // Track divergence
-            if let Some(esp) = event_sp {
+            // Track divergence (pre-correction pool price vs on-chain price)
+            if let Some((esp, pre_sp)) = event_sp {
                 swap_count += 1;
-                let pp = pool.slot0.sqrt_price_x96.to_string().parse::<f64>().unwrap();
+                let pp = pre_sp.to_string().parse::<f64>().unwrap();
                 let ep = esp.to_string().parse::<f64>().unwrap();
-                if ep > 0.0 { let d = ((pp-ep)/ep).abs()*10000.0; max_div_bps = max_div_bps.max(d); total_div += d; }
+                if ep > 0.0 {
+                    let d = ((pp - ep) / ep).abs() * 10000.0;
+                    max_div_bps = max_div_bps.max(d);
+                    total_div += d;
+                    // USD cost of hypothetical swap to correct price
+                    // Using V3 math: within one tick range with active liquidity L
+                    let q96 = 2f64.powi(96);
+                    let sp_pre = pp; // pre-correction sqrtPriceX96 as f64
+                    let sp_target = ep; // on-chain sqrtPriceX96 as f64
+                    let liq = pool.liquidity as f64;
+                    if sp_target > sp_pre {
+                        // Price up → need to swap token1 (USDC) in
+                        let amt1 = liq * (sp_target - sp_pre) / q96;
+                        cumul_correction_usd += amt1 / dec1;
+                    } else {
+                        // Price down → need to swap token0 (WETH) in
+                        let amt0 = liq * q96 * (1.0 / sp_target - 1.0 / sp_pre);
+                        let price_now = sqrt_price_to_human(esp, cfg.token0_decimals, cfg.token1_decimals);
+                        cumul_correction_usd += amt0 / dec0 * price_now;
+                    }
+                }
             }
 
             // Use POOL price for rebalance decisions (our positions sit in the pool)
             let pool_price_now = sqrt_price_to_human(pool.slot0.sqrt_price_x96, cfg.token0_decimals, cfg.token1_decimals);
 
-            let _price_move = ((pool_price_now - last_rebal_price) / last_rebal_price).abs() * 100.0;
             let blocks_since = bn.saturating_sub(last_rebal_block);
 
-            // Compute limit % of portfolio for rebalance trigger
-            let _limit_pct_of_tv = {
-                let pos_val = |pos: &Option<SimPosition>| -> f64 {
-                    pos.as_ref().map_or(0.0, |p| {
+            // ── Rebalance strategy selection ──────────────────────────────
+            let price_move = ((pool_price_now - last_rebal_price) / last_rebal_price).abs() * 100.0;
+            let price_threshold = cfg.rebalance_price_pct;
+            let time_threshold = blocks_since >= cfg.rebalance_interval_blocks;
+
+            // Check if price is outside the base range
+            let base_factor = 1.0 + cfg.base_range_pct / 100.0;
+            let base_lower_price = last_rebal_price / base_factor;
+            let base_upper_price = last_rebal_price * base_factor;
+            let out_of_base_range = pool_price_now < base_lower_price || pool_price_now > base_upper_price;
+
+            let should_rebalance = match cfg.rebalance_strategy.as_str() {
+                "time_only"      => time_threshold,
+                "price_only"     => price_move >= price_threshold,
+                "out_of_range"   => out_of_base_range,
+                "price_and_time" => price_move >= price_threshold && time_threshold,
+                "never"          => false,
+                _ => time_threshold, // fallback
+            };
+
+            if should_rebalance && c > 1 {
+                // ── Pre-rebalance valuation (for IL-per-rebalance tracking) ──
+                let pre_rebal_val = {
+                    let pos_val = |p: &SimPosition| -> f64 {
                         let l = pool.positions.get(&(p.owner, p.tick_lower, p.tick_upper)).map_or(0, |pp| pp.liquidity);
                         if l == 0 { return 0.0; }
                         let (a0, a1) = amounts_for_liquidity(l, pool.slot0.sqrt_price_x96, p.tick_lower, p.tick_upper, pool.slot0.tick);
                         a0.to_string().parse::<f64>().unwrap() / dec0 * pool_price_now + a1.to_string().parse::<f64>().unwrap() / dec1
-                    })
+                    };
+                    let opt_val = |p: &Option<SimPosition>| -> f64 { p.as_ref().map_or(0.0, |pp| pos_val(pp)) };
+                    pos_val(&wide) + pos_val(&base) + opt_val(&limit) + opt_val(&limit_b)
                 };
-                let lv = pos_val(&limit) + pos_val(&limit_b);
-                let w_liq = pool.positions.get(&(wide.owner, wide.tick_lower, wide.tick_upper)).map_or(0, |p| p.liquidity);
-                let b_liq = pool.positions.get(&(base.owner, base.tick_lower, base.tick_upper)).map_or(0, |p| p.liquidity);
-                let (wa0, wa1) = amounts_for_liquidity(w_liq, pool.slot0.sqrt_price_x96, wide.tick_lower, wide.tick_upper, pool.slot0.tick);
-                let (ba0, ba1) = amounts_for_liquidity(b_liq, pool.slot0.sqrt_price_x96, base.tick_lower, base.tick_upper, pool.slot0.tick);
-                let wbv = (wa0+ba0).to_string().parse::<f64>().unwrap() / dec0 * pool_price_now
-                       + (wa1+ba1).to_string().parse::<f64>().unwrap() / dec1;
-                let tv = wbv + lv;
-                if tv > 0.0 { lv / tv * 100.0 } else { 0.0 }
-            };
 
-            // Rebalance only on time interval
-            let should_rebalance = blocks_since >= cfg.rebalance_interval_blocks;
-
-            if should_rebalance && c > 1 {
                 // Capture pending fees from feeGrowthInside BEFORE burning
                 let (pf0_w, pf1_w) = pending_fees_raw(&pool, &wide);
                 let (pf0_b, pf1_b) = pending_fees_raw(&pool, &base);
@@ -546,6 +598,19 @@ async fn main() {
 
                 let tot_t0 = U256::from(t0w) + U256::from(t0b) + U256::from(t0l) + U256::from(t0lb);
                 let tot_t1 = U256::from(t1w) + U256::from(t1b) + U256::from(t1l) + U256::from(t1lb);
+
+                // ── Post-burn valuation (tokens recovered at current price) ──
+                let post_burn_val = tot_t0.to_string().parse::<f64>().unwrap() / dec0 * pool_price_now
+                                  + tot_t1.to_string().parse::<f64>().unwrap() / dec1;
+                // HODL-both value from last rebalance: what we'd have if we just held tokens
+                let hodl_from_last = {
+                    let t0_at_last = pre_rebal_val / 2.0 / last_rebal_price; // approx WETH held
+                    let t1_at_last = pre_rebal_val / 2.0; // approx USDC held
+                    t0_at_last * pool_price_now + t1_at_last
+                };
+                let rebal_il = hodl_from_last - post_burn_val;
+                total_rebal_il += rebal_il;
+                if rebal_il > worst_rebal_il { worst_rebal_il = rebal_il; }
 
                 let (nw, nb, nl, nlb) = deploy_positions(
                     &mut pool, tot_t0, tot_t1, &cfg, cfg.wide_alloc_pct, dec0, dec1, ts,
@@ -665,6 +730,10 @@ async fn main() {
                     bar(limit_usd, max_usd, bw, "\x1b[33m"), limit_usd, live_lt0 * p, cfg.token0_symbol, live_lt1, cfg.token1_symbol);
                 lines += 1;
 
+                let avg_d = if swap_count > 0 { total_div / swap_count as f64 } else { 0.0 };
+                print!("\x1b[2K  Correction   \x1b[33m${:.2} cumul\x1b[0m  avg {:.2} bps  max {:.2} bps  ({} swaps)\n",
+                    cumul_correction_usd, avg_d, max_div_bps, swap_count);
+                lines += 1;
 
                 std::io::stdout().flush().ok();
                 dash_lines = lines;
@@ -772,7 +841,21 @@ async fn main() {
     println!("  LP position value:${:.2}", total_pos_usd);
     println!("  Impermanent Loss: ${:.2} ({:.2}% of HODL-both)", il_usd, if hodl_both_val > 0.0 { il_usd / hodl_both_val * 100.0 } else { 0.0 });
     println!("  Fees earned:      ${:.2}", total_fees);
-    println!("  Fees - IL:        ${:.2} (net LP gain/loss vs HODL-both)\n", total_fees - il_usd);
+    println!("  Fees - IL:        ${:.2} (net LP gain/loss vs HODL-both)", total_fees - il_usd);
+    println!("\n─── Rebalance IL Breakdown ───────────────────────────");
+    println!("  Strategy:         {}", cfg.rebalance_strategy);
+    println!("  Rebalances:       {}", rebalance_count);
+    if rebalance_count > 0 {
+        println!("  Total rebal IL:   ${:.2}", total_rebal_il);
+        println!("  Avg IL/rebalance: ${:.2}", total_rebal_il / rebalance_count as f64);
+        println!("  Worst rebalance:  ${:.2}", worst_rebal_il);
+        println!("  Fee/rebalance:    ${:.2}", total_fees / rebalance_count as f64);
+        println!("  Net/rebalance:    ${:.2}", (total_fees - il_usd) / rebalance_count as f64);
+    } else {
+        println!("  No rebalances — IL is purely unrealized");
+    }
+    println!("─── Price Correction ─────────────────────────────────");
+    println!("  Correction cost:  ${:.2} (USD to swap sim price → on-chain price)", cumul_correction_usd);
     println!("─── Price Divergence ─────────────────────────────────");
     println!("  Pool price:       ${:.2} (simulated)", pool_price);
     println!("  On-chain price:   ${:.2}", exit_price);
